@@ -13,6 +13,8 @@ st.set_page_config(page_title="Finance OS Pro", layout="wide", initial_sidebar_s
 st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+    
+    /* Desktop Master Styling */
     .stApp {
         background: linear-gradient(rgba(15, 23, 42, 0.85), rgba(15, 23, 42, 0.85)), 
                     url('https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?q=80&w=1920&auto=format&fit=crop') no-repeat center center fixed;
@@ -50,6 +52,42 @@ st.markdown("""
         background: rgba(59, 130, 246, 0.35) !important;
         border-color: #60a5fa !important;
         box-shadow: 0 0 15px rgba(59, 130, 246, 0.3);
+    }
+
+    /* ==========================================
+       📱 SMART MOBILE RESPONSIVE OVERRIDES
+       ========================================== */
+    @media (max-width: 768px) {
+        /* Maximize usable space by reducing padding */
+        div[data-testid="stVerticalBlock"] > div:has(div.stForm), 
+        .stTabs, .glass-card, [data-testid="stMetricV9"] {
+            padding: 12px !important;
+            margin-bottom: 10px;
+            /* Darker, higher contrast background exclusively for mobile readibility */
+            background: rgba(15, 23, 42, 0.8) !important; 
+        }
+        
+        /* Force ultra-high contrast text colors on mobile to bypass browser bugs */
+        p, span, div, td, th, label {
+            color: #f8fafc !important;
+        }
+        
+        /* Smoothly downscale typography to prevent broken line wraps */
+        h1 { font-size: 1.6rem !important; }
+        h2 { font-size: 1.3rem !important; }
+        h3 { font-size: 1.1rem !important; }
+        
+        /* Prevent Metric values from overflowing with ellipsis (...) */
+        [data-testid="stMetricValue"] {
+            font-size: 1.4rem !important;
+            font-weight: 700 !important;
+            color: #ffffff !important;
+        }
+        
+        /* Scale down the operational context text */
+        .stApp p {
+            font-size: 0.9rem !important;
+        }
     }
 </style>
 """, unsafe_allow_html=True)
@@ -182,9 +220,8 @@ def get_monthly_income(m, y):
         end_valid = (ey > y) or (ey == y and em >= m)
         
         if start_valid and end_valid:
-            # محاسبه دقیق تعداد ماه‌های فعال قرارداد
             num_months = (ey - sy) * 12 + (em - sm) + 1
-            if num_months < 1: num_months = 1 # جلوگیری از خطای تقسیم بر صفر
+            if num_months < 1: num_months = 1
             
             if inc_type == "Annual": 
                 total_monthly += (amount / num_months)
@@ -363,7 +400,6 @@ with tab_inc:
     if raw_inc:
         processed_inc_data = []
         for rid, src, amt, itype, sm, sy, em, ey in raw_inc:
-            # محاسبه دقیق تعداد ماه‌ها در جدول
             num_months = (ey - sy) * 12 + (em - sm) + 1
             if num_months < 1: num_months = 1
             
