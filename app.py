@@ -65,7 +65,7 @@ def get_db_connection():
         return psycopg2.connect(st.secrets["postgres"]["url"])
     else:
         import sqlite3
-        return sqlite3.connect('finance_v3.db', check_same_thread=False)
+        return sqlite3.connect('finance_v4.db', check_same_thread=False)
 
 def db_execute(cursor, query, params=()):
     if IS_POSTGRES:
@@ -79,7 +79,10 @@ def init_db():
     id_type = "SERIAL PRIMARY KEY" if IS_POSTGRES else "INTEGER PRIMARY KEY AUTOINCREMENT"
     
     cursor.execute(f'''CREATE TABLE IF NOT EXISTS users (id {id_type}, username TEXT UNIQUE, password TEXT)''')
-    cursor.execute(f'''CREATE TABLE IF NOT EXISTS income (id {id_type}, user_id INTEGER, source TEXT, amount REAL, inc_type TEXT, timestamp TEXT)''')
+    # Added contract duration tracking columns to the income schema
+    cursor.execute(f'''CREATE TABLE IF NOT EXISTS income (
+                        id {id_type}, user_id INTEGER, source TEXT, amount REAL, inc_type TEXT, 
+                        start_month INTEGER, start_year INTEGER, end_month INTEGER, end_year INTEGER, timestamp TEXT)''')
     cursor.execute(f'''CREATE TABLE IF NOT EXISTS fixed_expenses (id {id_type}, user_id INTEGER, name TEXT, amount REAL, month INTEGER, year INTEGER, timestamp TEXT)''')
     cursor.execute(f'''CREATE TABLE IF NOT EXISTS variable_expenses (id {id_type}, user_id INTEGER, category TEXT, description TEXT, amount REAL, month INTEGER, year INTEGER, timestamp TEXT)''')
     
@@ -153,13 +156,17 @@ if not st.session_state['logged_in']:
 # ==========================================
 user_id = st.session_state['user_id']
 
-def get_monthly_income():
-    db_execute(cursor, 'SELECT amount, inc_type FROM income WHERE user_id = ?', (user_id,))
+# Updated: Calculates income only if the target month/year falls within the contract window
+def get_monthly_income(m, y):
+    db_execute(cursor, 'SELECT amount, inc_type, start_month, start_year, end_month, end_year FROM income WHERE user_id = ?', (user_id,))
     records = cursor.fetchall()
     total_monthly = 0.0
-    for amount, inc_type in records:
-        if inc_type == "Annual": total_monthly += (amount / 12)
-        else: total_monthly += amount
+    for amount, inc_type, sm, sy, em, ey in records:
+        start_valid = (sy < y) or (sy == y and sm <= m)
+        end_valid = (ey > y) or (ey == y and em >= m)
+        if start_valid and end_valid:
+            if inc_type == "Annual": total_monthly += (amount / 12)
+            else: total_monthly += amount
     return total_monthly
 
 def get_total_expenses(m, y):
@@ -173,9 +180,9 @@ def get_total_expenses(m, y):
     return fixed + var
 
 def get_previous_savings(current_m, current_y):
-    monthly_inc = get_monthly_income()
     total_savings = 0.0
     for m in range(1, current_m):
+        monthly_inc = get_monthly_income(m, current_y)
         m_expenses = get_total_expenses(m, current_y)
         total_savings += (monthly_inc - m_expenses)
     return total_savings
@@ -190,7 +197,7 @@ st.sidebar.markdown("### 🔍 Historical Archive")
 sel_year = st.sidebar.selectbox("Select Year", [now.year - 1, now.year, now.year + 1], index=1)
 sel_month = st.sidebar.selectbox("Select Month", list(range(1, 13)), index=now.month - 1, format_func=lambda x: calendar.month_name[x])
 
-m_income = get_monthly_income()
+m_income = get_monthly_income(sel_month, sel_year)
 m_expenses = get_total_expenses(sel_month, sel_year)
 m_balance = m_income - m_expenses
 
@@ -311,28 +318,38 @@ with tab_inc:
             i_src = col_name.text_input("Income Vector Title (e.g., Main Salary, Grant)")
             i_amt = col_val.number_input("Absolute Numerical Amount (€)", min_value=0.0, step=100.0)
             
+            # Form modifications: Contract validity boundaries
+            st.markdown("**Contract Validity / Duration Window:**")
+            col_sm, col_sy, col_em, col_ey = st.columns(4)
+            start_m = col_sm.selectbox("Start Month", list(range(1, 13)), index=0, format_func=lambda x: calendar.month_name[x])
+            start_y = col_sy.selectbox("Start Year", [2025, 2026, 2027, 2028, 2029], index=1)
+            end_m = col_em.selectbox("End Month", list(range(1, 13)), index=11, format_func=lambda x: calendar.month_name[x])
+            end_y = col_ey.selectbox("End Year", [2025, 2026, 2027, 2028, 2029], index=2)
+            
             if st.form_submit_button("Inject Income Asset"):
                 if i_src and i_amt > 0:
-                    db_execute(cursor, 'INSERT INTO income (user_id, source, amount, inc_type, timestamp) VALUES (?, ?, ?, ?, ?)',
-                               (user_id, i_src, i_amt, i_type, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+                    db_execute(cursor, '''INSERT INTO income (user_id, source, amount, inc_type, start_month, start_year, end_month, end_year, timestamp) 
+                                          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                               (user_id, i_src, i_amt, i_type, start_m, start_y, end_m, end_y, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
                     conn.commit()
-                    st.success(f"Successfully committed {i_type} asset vector.")
+                    st.success(f"Successfully committed {i_type} asset vector with timeline.")
                     st.session_state.inc_key += 1
                     conn.close()
                     st.rerun()
 
     st.markdown("### Active Income Infrastructure Asset Matrix")
-    db_execute(cursor, 'SELECT id, source, amount, inc_type FROM income WHERE user_id = ?', (user_id,))
+    db_execute(cursor, 'SELECT id, source, amount, inc_type, start_month, start_year, end_month, end_year FROM income WHERE user_id = ?', (user_id,))
     raw_inc = cursor.fetchall()
     if raw_inc:
         processed_inc_data = []
-        for rid, src, amt, itype in raw_inc:
+        for rid, src, amt, itype, sm, sy, em, ey in raw_inc:
             ann_equiv = amt if itype == "Annual" else amt * 12
             mon_equiv = amt / 12 if itype == "Annual" else amt
-            processed_inc_data.append([rid, src, itype, amt, ann_equiv, mon_equiv])
+            duration_text = f"{calendar.month_name[sm]} {sy} ➔ {calendar.month_name[em]} {ey}"
+            processed_inc_data.append([rid, src, itype, amt, duration_text, ann_equiv, mon_equiv])
             
-        df_inc_matrix = pd.DataFrame(processed_inc_data, columns=['Asset ID', 'Source Vector', 'Horizon Type', 'Stated Amount (€)', 'Annual Equiv (€)', 'Monthly Equiv (€)'])
-        total_row = pd.DataFrame([['TOTALS', '', '', 0.0, df_inc_matrix['Annual Equiv (€)'].sum(), df_inc_matrix['Monthly Equiv (€)'].sum()]], columns=['Asset ID', 'Source Vector', 'Horizon Type', 'Stated Amount (€)', 'Annual Equiv (€)', 'Monthly Equiv (€)'])
+        df_inc_matrix = pd.DataFrame(processed_inc_data, columns=['Asset ID', 'Source Vector', 'Horizon Type', 'Stated Amount (€)', 'Contract Window', 'Annual Equiv (€)', 'Monthly Equiv (€)'])
+        total_row = pd.DataFrame([['TOTALS', '', '', 0.0, '', df_inc_matrix['Annual Equiv (€)'].sum(), df_inc_matrix['Monthly Equiv (€)'].sum()]], columns=['Asset ID', 'Source Vector', 'Horizon Type', 'Stated Amount (€)', 'Contract Window', 'Annual Equiv (€)', 'Monthly Equiv (€)'])
         df_display_inc = pd.concat([df_inc_matrix, total_row], ignore_index=True)
         st.dataframe(df_display_inc, hide_index=True, use_container_width=True)
         
