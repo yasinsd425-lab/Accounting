@@ -55,7 +55,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# HYBRID DATABASE ENGINE (POSTGRES / SQLITE)
+# HYBRID DATABASE ENGINE & MIGRATION CACHE
 # ==========================================
 IS_POSTGRES = "postgres" in st.secrets
 
@@ -67,18 +67,14 @@ def get_db_connection():
         import sqlite3
         return sqlite3.connect('finance_v4.db', check_same_thread=False)
 
-def db_execute(cursor, query, params=()):
-    if IS_POSTGRES:
-        query = query.replace('?', '%s')
-    cursor.execute(query, params)
-
-def init_db():
+# اجرای دیتابیس فقط و فقط یک بار هنگام روشن شدن سرور برای جلوگیری از کرش
+@st.cache_resource
+def init_db_once():
     conn = get_db_connection()
     cursor = conn.cursor()
     
     id_type = "SERIAL PRIMARY KEY" if IS_POSTGRES else "INTEGER PRIMARY KEY AUTOINCREMENT"
     
-    # ساخت جداول در صورت عدم وجود
     cursor.execute(f'''CREATE TABLE IF NOT EXISTS users (id {id_type}, username TEXT UNIQUE, password TEXT)''')
     cursor.execute(f'''CREATE TABLE IF NOT EXISTS income (
                         id {id_type}, user_id INTEGER, source TEXT, amount REAL, inc_type TEXT, 
@@ -86,14 +82,12 @@ def init_db():
     cursor.execute(f'''CREATE TABLE IF NOT EXISTS fixed_expenses (id {id_type}, user_id INTEGER, name TEXT, amount REAL, month INTEGER, year INTEGER, timestamp TEXT)''')
     cursor.execute(f'''CREATE TABLE IF NOT EXISTS variable_expenses (id {id_type}, user_id INTEGER, category TEXT, description TEXT, amount REAL, month INTEGER, year INTEGER, timestamp TEXT)''')
     
-    # مایگریشن: اضافه کردن خودکار ستون‌های جدید به دیتابیس‌های قدیمی
     if IS_POSTGRES:
         cursor.execute('''
-            ALTER TABLE income 
-            ADD COLUMN IF NOT EXISTS start_month INTEGER DEFAULT 1,
-            ADD COLUMN IF NOT EXISTS start_year INTEGER DEFAULT 2025,
-            ADD COLUMN IF NOT EXISTS end_month INTEGER DEFAULT 12,
-            ADD COLUMN IF NOT EXISTS end_year INTEGER DEFAULT 2030;
+            ALTER TABLE income ADD COLUMN IF NOT EXISTS start_month INTEGER DEFAULT 1;
+            ALTER TABLE income ADD COLUMN IF NOT EXISTS start_year INTEGER DEFAULT 2025;
+            ALTER TABLE income ADD COLUMN IF NOT EXISTS end_month INTEGER DEFAULT 12;
+            ALTER TABLE income ADD COLUMN IF NOT EXISTS end_year INTEGER DEFAULT 2030;
         ''')
     else:
         cursor.execute("PRAGMA table_info(income)")
@@ -106,12 +100,22 @@ def init_db():
             
     conn.commit()
     conn.close()
+    return True
 
-# اجرای تابع دیتابیس
-init_db()
+# راه‌اندازی اولیه
+init_db_once()
+
+# ایجاد کانکشن اختصاصی برای هر سشن (بدون نیاز به بستن دستی)
+conn = get_db_connection()
+cursor = conn.cursor()
+
+def db_execute(query, params=()):
+    if IS_POSTGRES:
+        query = query.replace('?', '%s')
+    cursor.execute(query, params)
 
 # ==========================================
-# توابع رمزنگاری (این بخش در فایل شما پاک شده بود)
+# AUTHENTICATION & SESSION FUNCTIONS
 # ==========================================
 def make_hashes(password): 
     return hashlib.sha256(str.encode(password)).hexdigest()
@@ -119,22 +123,15 @@ def make_hashes(password):
 def check_hashes(password, hashed_text): 
     return make_hashes(password) == hashed_text
 
-# متغیرهای نشست برای ریست کردن فرم‌ها
 if "inc_key" not in st.session_state: st.session_state.inc_key = 0
 if "fix_key" not in st.session_state: st.session_state.fix_key = 0
 if "var_key" not in st.session_state: st.session_state.var_key = 0
 
-# ==========================================
-# AUTHENTICATION FLOW
-# ==========================================
 if 'logged_in' not in st.session_state:
     st.session_state['logged_in'] = False
     st.session_state['user_id'] = None
     st.session_state['username'] = ""
     st.session_state['auth_mode'] = "Login"
-
-conn = get_db_connection()
-cursor = conn.cursor()
 
 if not st.session_state['logged_in']:
     col1, col2, col3 = st.columns([1, 1.2, 1])
@@ -148,13 +145,12 @@ if not st.session_state['logged_in']:
                 password = st.text_input("Password", type='password')
                 submitted = st.form_submit_button("Log In", use_container_width=True)
                 if submitted:
-                    db_execute(cursor, 'SELECT id, password FROM users WHERE username = ?', (username,))
+                    db_execute('SELECT id, password FROM users WHERE username = ?', (username,))
                     user_data = cursor.fetchone()
                     if user_data and check_hashes(password, user_data[1]):
                         st.session_state['logged_in'] = True
                         st.session_state['user_id'] = user_data[0]
                         st.session_state['username'] = username
-                        conn.close()
                         st.rerun()
                     else:
                         st.error("Invalid Username or Password.")
@@ -166,15 +162,13 @@ if not st.session_state['logged_in']:
                 submitted = st.form_submit_button("Create Premium Account", use_container_width=True)
                 if submitted:
                     try:
-                        db_execute(cursor, 'INSERT INTO users(username, password) VALUES (?,?)', (new_user, make_hashes(new_password)))
+                        db_execute('INSERT INTO users(username, password) VALUES (?,?)', (new_user, make_hashes(new_password)))
                         conn.commit()
                         st.success("Account created successfully! Switching to Login Mode...")
                         st.session_state['auth_mode'] = "Login"
-                        conn.close()
                         st.rerun()
                     except Exception:
-                        st.error("Username already taken or connection error.")
-    conn.close()
+                        st.error("Username already taken or database error.")
     st.stop()
 
 # ==========================================
@@ -182,9 +176,8 @@ if not st.session_state['logged_in']:
 # ==========================================
 user_id = st.session_state['user_id']
 
-# Updated: Calculates income only if the target month/year falls within the contract window
 def get_monthly_income(m, y):
-    db_execute(cursor, 'SELECT amount, inc_type, start_month, start_year, end_month, end_year FROM income WHERE user_id = ?', (user_id,))
+    db_execute('SELECT amount, inc_type, start_month, start_year, end_month, end_year FROM income WHERE user_id = ?', (user_id,))
     records = cursor.fetchall()
     total_monthly = 0.0
     for amount, inc_type, sm, sy, em, ey in records:
@@ -196,11 +189,11 @@ def get_monthly_income(m, y):
     return total_monthly
 
 def get_total_expenses(m, y):
-    db_execute(cursor, 'SELECT SUM(amount) FROM fixed_expenses WHERE user_id = ? AND month = ? AND year = ?', (user_id, m, y))
+    db_execute('SELECT SUM(amount) FROM fixed_expenses WHERE user_id = ? AND month = ? AND year = ?', (user_id, m, y))
     res_f = cursor.fetchone()
     fixed = res_f[0] or 0.0 if res_f else 0.0
     
-    db_execute(cursor, 'SELECT SUM(amount) FROM variable_expenses WHERE user_id = ? AND month = ? AND year = ?', (user_id, m, y))
+    db_execute('SELECT SUM(amount) FROM variable_expenses WHERE user_id = ? AND month = ? AND year = ?', (user_id, m, y))
     res_v = cursor.fetchone()
     var = res_v[0] or 0.0 if res_v else 0.0
     return fixed + var
@@ -235,7 +228,6 @@ st.sidebar.metric("Net Balance", f"€ {m_balance:,.2f}")
 
 st.sidebar.divider()
 if st.sidebar.button("🚪 Terminate Session", use_container_width=True):
-    conn.close()
     st.session_state.clear()
     st.rerun()
 
@@ -286,14 +278,14 @@ with tab_dash:
     st.divider()
     
     st.markdown("### 📊 Distribution Analysis")
-    db_execute(cursor, 'SELECT name, amount FROM fixed_expenses WHERE user_id = ? AND month = ? AND year = ?', (user_id, sel_month, sel_year))
+    db_execute('SELECT name, amount FROM fixed_expenses WHERE user_id = ? AND month = ? AND year = ?', (user_id, sel_month, sel_year))
     f_data = cursor.fetchall()
-    db_execute(cursor, 'SELECT category, SUM(amount) FROM variable_expenses WHERE user_id = ? AND month = ? AND year = ? GROUP BY category', (user_id, sel_month, sel_year))
+    db_execute('SELECT category, SUM(amount) FROM variable_expenses WHERE user_id = ? AND month = ? AND year = ? GROUP BY category', (user_id, sel_month, sel_year))
     v_data = cursor.fetchall()
     
     chart_data = [{'Segment': row[0], 'Amount': row[1]} for row in f_data] + [{'Segment': row[0], 'Amount': row[1]} for row in v_data]
                  
-    if chart_data:
+    if chart_data and sum(item['Amount'] for item in chart_data) > 0:
         df_chart = pd.DataFrame(chart_data)
         soft_colors = ['#A7F3D0', '#93C5FD', '#FDE68A', '#FCA5A5', '#C084FC', '#F472B6', '#CBD5E1']
         fig = px.pie(df_chart, values='Amount', names='Segment', hole=0.4, color_discrete_sequence=soft_colors)
@@ -306,7 +298,7 @@ with tab_dash:
     
     st.markdown("### 📜 Granular Ledger Reports")
     st.markdown("#### 🔹 Fixed Expenses Breakdown")
-    db_execute(cursor, 'SELECT name, amount FROM fixed_expenses WHERE user_id = ? AND month = ? AND year = ?', (user_id, sel_month, sel_year))
+    db_execute('SELECT name, amount FROM fixed_expenses WHERE user_id = ? AND month = ? AND year = ?', (user_id, sel_month, sel_year))
     f_ledger = cursor.fetchall()
     if f_ledger:
         df_f_ledger = pd.DataFrame(f_ledger, columns=['Name', 'Amount (€)'])
@@ -319,7 +311,7 @@ with tab_dash:
     st.markdown("<br>", unsafe_allow_html=True)
         
     st.markdown("#### 🔹 Variable Expenses Breakdown")
-    db_execute(cursor, 'SELECT category, description, amount FROM variable_expenses WHERE user_id = ? AND month = ? AND year = ?', (user_id, sel_month, sel_year))
+    db_execute('SELECT category, description, amount FROM variable_expenses WHERE user_id = ? AND month = ? AND year = ?', (user_id, sel_month, sel_year))
     v_ledger = cursor.fetchall()
     if v_ledger:
         df_v_ledger = pd.DataFrame(v_ledger, columns=['Category', 'Description', 'Amount (€)'])
@@ -344,7 +336,6 @@ with tab_inc:
             i_src = col_name.text_input("Income Vector Title (e.g., Main Salary, Grant)")
             i_amt = col_val.number_input("Absolute Numerical Amount (€)", min_value=0.0, step=100.0)
             
-            # Form modifications: Contract validity boundaries
             st.markdown("**Contract Validity / Duration Window:**")
             col_sm, col_sy, col_em, col_ey = st.columns(4)
             start_m = col_sm.selectbox("Start Month", list(range(1, 13)), index=0, format_func=lambda x: calendar.month_name[x])
@@ -354,17 +345,16 @@ with tab_inc:
             
             if st.form_submit_button("Inject Income Asset"):
                 if i_src and i_amt > 0:
-                    db_execute(cursor, '''INSERT INTO income (user_id, source, amount, inc_type, start_month, start_year, end_month, end_year, timestamp) 
-                                          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                    db_execute('''INSERT INTO income (user_id, source, amount, inc_type, start_month, start_year, end_month, end_year, timestamp) 
+                                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''',
                                (user_id, i_src, i_amt, i_type, start_m, start_y, end_m, end_y, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
                     conn.commit()
                     st.success(f"Successfully committed {i_type} asset vector with timeline.")
                     st.session_state.inc_key += 1
-                    conn.close()
                     st.rerun()
 
     st.markdown("### Active Income Infrastructure Asset Matrix")
-    db_execute(cursor, 'SELECT id, source, amount, inc_type, start_month, start_year, end_month, end_year FROM income WHERE user_id = ?', (user_id,))
+    db_execute('SELECT id, source, amount, inc_type, start_month, start_year, end_month, end_year FROM income WHERE user_id = ?', (user_id,))
     raw_inc = cursor.fetchall()
     if raw_inc:
         processed_inc_data = []
@@ -388,14 +378,12 @@ with tab_inc:
             up_amt = col_amt.number_input("Update Numeric Value (€)", value=float(selected_asset['Stated Amount (€)']), step=100.0)
             
             if col_action.button("Commit Strategic Update", key='btn_inc_upd', use_container_width=True):
-                db_execute(cursor, 'UPDATE income SET source=?, amount=? WHERE id=?', (up_src, up_amt, target_id))
+                db_execute('UPDATE income SET source=?, amount=? WHERE id=?', (up_src, up_amt, target_id))
                 conn.commit()
-                conn.close()
                 st.rerun()
             if col_action.button("Liquidate/Delete Asset", key='btn_inc_del', type="primary", use_container_width=True):
-                db_execute(cursor, 'DELETE FROM income WHERE id=?', (target_id,))
+                db_execute('DELETE FROM income WHERE id=?', (target_id,))
                 conn.commit()
-                conn.close()
                 st.rerun()
     else:
         st.info("System awaiting population of Income Infrastructure vectors.")
@@ -412,16 +400,15 @@ with tab_fix:
             fixed_val = col_fa.number_input("Absolute Volume Debit (€)", min_value=0.0, step=10.0)
             if st.form_submit_button("Commit Fixed Structural Entry"):
                 if fixed_title and fixed_val > 0:
-                    db_execute(cursor, 'INSERT INTO fixed_expenses (user_id, name, amount, month, year, timestamp) VALUES (?, ?, ?, ?, ?, ?)',
+                    db_execute('INSERT INTO fixed_expenses (user_id, name, amount, month, year, timestamp) VALUES (?, ?, ?, ?, ?, ?)',
                                (user_id, fixed_title, fixed_val, sel_month, sel_year, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
                     conn.commit()
                     st.success("Fixed structural entry synchronized.")
                     st.session_state.fix_key += 1
-                    conn.close()
                     st.rerun()
 
     st.markdown("### Active Fixed Debit Structural Matrix")
-    db_execute(cursor, 'SELECT id, name, amount, timestamp FROM fixed_expenses WHERE user_id = ? AND month = ? AND year = ?', (user_id, sel_month, sel_year))
+    db_execute('SELECT id, name, amount, timestamp FROM fixed_expenses WHERE user_id = ? AND month = ? AND year = ?', (user_id, sel_month, sel_year))
     raw_fix = cursor.fetchall()
     if raw_fix:
         df_fix_matrix = pd.DataFrame(raw_fix, columns=['Debit ID', 'Identifier Label', 'Absolute Cost (€)', 'Temporal Timestamp'])
@@ -438,14 +425,12 @@ with tab_fix:
             up_f_val = col_val.number_input("Update Cost Value (€)", value=float(selected_fix['Absolute Cost (€)']), step=10.0)
             
             if col_act.button("Modify Entry Structure", key='btn_fix_upd', use_container_width=True):
-                db_execute(cursor, 'UPDATE fixed_expenses SET name=?, amount=? WHERE id=?', (up_f_lbl, up_f_val, target_f_id))
+                db_execute('UPDATE fixed_expenses SET name=?, amount=? WHERE id=?', (up_f_lbl, up_f_val, target_f_id))
                 conn.commit()
-                conn.close()
                 st.rerun()
             if col_act.button("Wipe Entry Record", key='btn_fix_del', type="primary", use_container_width=True):
-                db_execute(cursor, 'DELETE FROM fixed_expenses WHERE id=?', (target_f_id,))
+                db_execute('DELETE FROM fixed_expenses WHERE id=?', (target_f_id,))
                 conn.commit()
-                conn.close()
                 st.rerun()
     else:
         st.info("No fixed infrastructure commitments configured for this specific operational month.")
@@ -466,16 +451,15 @@ with tab_var:
             
             if st.form_submit_button("Commit Transaction Entry"):
                 if v_amount_field > 0 and v_description_field:
-                    db_execute(cursor, 'INSERT INTO variable_expenses (user_id, category, description, amount, month, year, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)',
+                    db_execute('INSERT INTO variable_expenses (user_id, category, description, amount, month, year, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)',
                                (user_id, v_category_selection, v_description_field, v_amount_field, sel_month, sel_year, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
                     conn.commit()
                     st.success("Variable flow debit updated globally.")
                     st.session_state.var_key += 1
-                    conn.close()
                     st.rerun()
 
     st.markdown("### Fragmented Category Segment Matrix Reports")
-    db_execute(cursor, 'SELECT id, category, description, amount, timestamp FROM variable_expenses WHERE user_id = ? AND month = ? AND year = ?', (user_id, sel_month, sel_year))
+    db_execute('SELECT id, category, description, amount, timestamp FROM variable_expenses WHERE user_id = ? AND month = ? AND year = ?', (user_id, sel_month, sel_year))
     raw_var = cursor.fetchall()
     
     if raw_var:
@@ -497,16 +481,12 @@ with tab_var:
             up_v_amt = col_amt.number_input("Modify Numerical Metric (€)", value=float(selected_var['Absolute Value (€)']), step=5.0)
             
             if col_act.button("Modify Matrix Entry", key='btn_var_upd', use_container_width=True):
-                db_execute(cursor, 'UPDATE variable_expenses SET category=?, description=?, amount=? WHERE id=?', (up_v_cat, up_v_dsc, up_v_amt, target_v_id))
+                db_execute('UPDATE variable_expenses SET category=?, description=?, amount=? WHERE id=?', (up_v_cat, up_v_dsc, up_v_amt, target_v_id))
                 conn.commit()
-                conn.close()
                 st.rerun()
             if col_act.button("Purge Entry Completely", key='btn_var_del', type="primary", use_container_width=True):
-                db_execute(cursor, 'DELETE FROM variable_expenses WHERE id=?', (target_v_id,))
+                db_execute('DELETE FROM variable_expenses WHERE id=?', (target_v_id,))
                 conn.commit()
-                conn.close()
                 st.rerun()
     else:
         st.info("No variable transactional workflows initiated for this operational context time period.")
-
-conn.close()
