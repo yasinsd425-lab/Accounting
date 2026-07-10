@@ -91,12 +91,42 @@ def init_db():
 
 init_db()
 
-def make_hashes(password): return hashlib.sha256(str.encode(password)).hexdigest()
-def check_hashes(password, hashed_text): return make_hashes(password) == hashed_text
-
-if "inc_key" not in st.session_state: st.session_state.inc_key = 0
-if "fix_key" not in st.session_state: st.session_state.fix_key = 0
-if "var_key" not in st.session_state: st.session_state.var_key = 0
+def init_db():
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    id_type = "SERIAL PRIMARY KEY" if IS_POSTGRES else "INTEGER PRIMARY KEY AUTOINCREMENT"
+    
+    # ساخت جداول در صورت عدم وجود
+    cursor.execute(f'''CREATE TABLE IF NOT EXISTS users (id {id_type}, username TEXT UNIQUE, password TEXT)''')
+    cursor.execute(f'''CREATE TABLE IF NOT EXISTS income (
+                        id {id_type}, user_id INTEGER, source TEXT, amount REAL, inc_type TEXT, 
+                        start_month INTEGER, start_year INTEGER, end_month INTEGER, end_year INTEGER, timestamp TEXT)''')
+    cursor.execute(f'''CREATE TABLE IF NOT EXISTS fixed_expenses (id {id_type}, user_id INTEGER, name TEXT, amount REAL, month INTEGER, year INTEGER, timestamp TEXT)''')
+    cursor.execute(f'''CREATE TABLE IF NOT EXISTS variable_expenses (id {id_type}, user_id INTEGER, category TEXT, description TEXT, amount REAL, month INTEGER, year INTEGER, timestamp TEXT)''')
+    
+    # === کد مایگریشن: اضافه کردن خودکار ستون‌های جدید به دیتابیس‌های قدیمی ===
+    if IS_POSTGRES:
+        # برای PostgreSQL روی سرور ابری (Neon)
+        cursor.execute('''
+            ALTER TABLE income 
+            ADD COLUMN IF NOT EXISTS start_month INTEGER DEFAULT 1,
+            ADD COLUMN IF NOT EXISTS start_year INTEGER DEFAULT 2025,
+            ADD COLUMN IF NOT EXISTS end_month INTEGER DEFAULT 12,
+            ADD COLUMN IF NOT EXISTS end_year INTEGER DEFAULT 2030;
+        ''')
+    else:
+        # برای SQLite روی سیستم لوکال
+        cursor.execute("PRAGMA table_info(income)")
+        columns = [info[1] for info in cursor.fetchall()]
+        if "start_month" not in columns:
+            cursor.execute("ALTER TABLE income ADD COLUMN start_month INTEGER DEFAULT 1")
+            cursor.execute("ALTER TABLE income ADD COLUMN start_year INTEGER DEFAULT 2025")
+            cursor.execute("ALTER TABLE income ADD COLUMN end_month INTEGER DEFAULT 12")
+            cursor.execute("ALTER TABLE income ADD COLUMN end_year INTEGER DEFAULT 2030")
+            
+    conn.commit()
+    conn.close()
 
 # ==========================================
 # AUTHENTICATION FLOW
