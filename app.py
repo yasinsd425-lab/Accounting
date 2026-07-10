@@ -67,7 +67,6 @@ def get_db_connection():
         import sqlite3
         return sqlite3.connect('finance_v4.db', check_same_thread=False)
 
-# اجرای دیتابیس فقط و فقط یک بار هنگام روشن شدن سرور برای جلوگیری از کرش
 @st.cache_resource
 def init_db_once():
     conn = get_db_connection()
@@ -102,10 +101,8 @@ def init_db_once():
     conn.close()
     return True
 
-# راه‌اندازی اولیه
 init_db_once()
 
-# ایجاد کانکشن اختصاصی برای هر سشن (بدون نیاز به بستن دستی)
 conn = get_db_connection()
 cursor = conn.cursor()
 
@@ -183,9 +180,16 @@ def get_monthly_income(m, y):
     for amount, inc_type, sm, sy, em, ey in records:
         start_valid = (sy < y) or (sy == y and sm <= m)
         end_valid = (ey > y) or (ey == y and em >= m)
+        
         if start_valid and end_valid:
-            if inc_type == "Annual": total_monthly += (amount / 12)
-            else: total_monthly += amount
+            # محاسبه دقیق تعداد ماه‌های فعال قرارداد
+            num_months = (ey - sy) * 12 + (em - sm) + 1
+            if num_months < 1: num_months = 1 # جلوگیری از خطای تقسیم بر صفر
+            
+            if inc_type == "Annual": 
+                total_monthly += (amount / num_months)
+            else: 
+                total_monthly += amount
     return total_monthly
 
 def get_total_expenses(m, y):
@@ -332,8 +336,8 @@ with tab_inc:
     with st.container():
         with st.form(f"add_income_pro_{st.session_state.inc_key}"):
             col_type, col_name, col_val = st.columns([1, 2, 1.5])
-            i_type = col_type.radio("Income Horizon Type:", ["Annual", "Monthly"], horizontal=True)
-            i_src = col_name.text_input("Income Vector Title (e.g., Main Salary, Grant)")
+            i_type = col_type.radio("Income Horizon Type:", ["Annual", "Monthly"], horizontal=True, help="'Annual' means Total Contract Amount for the selected period.")
+            i_src = col_name.text_input("Income Vector Title (e.g., Scholarship, Salary)")
             i_amt = col_val.number_input("Absolute Numerical Amount (€)", min_value=0.0, step=100.0)
             
             st.markdown("**Contract Validity / Duration Window:**")
@@ -349,7 +353,7 @@ with tab_inc:
                                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''',
                                (user_id, i_src, i_amt, i_type, start_m, start_y, end_m, end_y, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
                     conn.commit()
-                    st.success(f"Successfully committed {i_type} asset vector with timeline.")
+                    st.success(f"Successfully committed asset vector with timeline.")
                     st.session_state.inc_key += 1
                     st.rerun()
 
@@ -359,13 +363,22 @@ with tab_inc:
     if raw_inc:
         processed_inc_data = []
         for rid, src, amt, itype, sm, sy, em, ey in raw_inc:
-            ann_equiv = amt if itype == "Annual" else amt * 12
-            mon_equiv = amt / 12 if itype == "Annual" else amt
-            duration_text = f"{calendar.month_name[sm]} {sy} ➔ {calendar.month_name[em]} {ey}"
-            processed_inc_data.append([rid, src, itype, amt, duration_text, ann_equiv, mon_equiv])
+            # محاسبه دقیق تعداد ماه‌ها در جدول
+            num_months = (ey - sy) * 12 + (em - sm) + 1
+            if num_months < 1: num_months = 1
             
-        df_inc_matrix = pd.DataFrame(processed_inc_data, columns=['Asset ID', 'Source Vector', 'Horizon Type', 'Stated Amount (€)', 'Contract Window', 'Annual Equiv (€)', 'Monthly Equiv (€)'])
-        total_row = pd.DataFrame([['TOTALS', '', '', 0.0, '', df_inc_matrix['Annual Equiv (€)'].sum(), df_inc_matrix['Monthly Equiv (€)'].sum()]], columns=['Asset ID', 'Source Vector', 'Horizon Type', 'Stated Amount (€)', 'Contract Window', 'Annual Equiv (€)', 'Monthly Equiv (€)'])
+            if itype == "Annual":
+                total_equiv = round(amt, 2)
+                mon_equiv = round(amt / num_months, 2)
+            else:
+                total_equiv = round(amt * num_months, 2)
+                mon_equiv = round(amt, 2)
+                
+            duration_text = f"{calendar.month_name[sm]} {sy} ➔ {calendar.month_name[em]} {ey} ({num_months}m)"
+            processed_inc_data.append([rid, src, itype, amt, duration_text, total_equiv, mon_equiv])
+            
+        df_inc_matrix = pd.DataFrame(processed_inc_data, columns=['Asset ID', 'Source Vector', 'Horizon Type', 'Stated Amount (€)', 'Contract Window', 'Total Contract Value (€)', 'Monthly Equiv (€)'])
+        total_row = pd.DataFrame([['TOTALS', '', '', 0.0, '', df_inc_matrix['Total Contract Value (€)'].sum(), df_inc_matrix['Monthly Equiv (€)'].sum()]], columns=['Asset ID', 'Source Vector', 'Horizon Type', 'Stated Amount (€)', 'Contract Window', 'Total Contract Value (€)', 'Monthly Equiv (€)'])
         df_display_inc = pd.concat([df_inc_matrix, total_row], ignore_index=True)
         st.dataframe(df_display_inc, hide_index=True, use_container_width=True)
         
