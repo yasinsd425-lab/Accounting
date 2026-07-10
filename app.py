@@ -86,9 +86,8 @@ def init_db():
     cursor.execute(f'''CREATE TABLE IF NOT EXISTS fixed_expenses (id {id_type}, user_id INTEGER, name TEXT, amount REAL, month INTEGER, year INTEGER, timestamp TEXT)''')
     cursor.execute(f'''CREATE TABLE IF NOT EXISTS variable_expenses (id {id_type}, user_id INTEGER, category TEXT, description TEXT, amount REAL, month INTEGER, year INTEGER, timestamp TEXT)''')
     
-    # === کد مایگریشن: اضافه کردن خودکار ستون‌های جدید به دیتابیس‌های قدیمی ===
+    # مایگریشن: اضافه کردن خودکار ستون‌های جدید به دیتابیس‌های قدیمی
     if IS_POSTGRES:
-        # برای PostgreSQL روی سرور ابری (Neon)
         cursor.execute('''
             ALTER TABLE income 
             ADD COLUMN IF NOT EXISTS start_month INTEGER DEFAULT 1,
@@ -97,7 +96,6 @@ def init_db():
             ADD COLUMN IF NOT EXISTS end_year INTEGER DEFAULT 2030;
         ''')
     else:
-        # برای SQLite روی سیستم لوکال
         cursor.execute("PRAGMA table_info(income)")
         columns = [info[1] for info in cursor.fetchall()]
         if "start_month" not in columns:
@@ -109,8 +107,23 @@ def init_db():
     conn.commit()
     conn.close()
 
-# فراخوانی و اجرای تابع دقیقاً باید اینجا و فقط یک‌بار باشد
+# اجرای تابع دیتابیس
 init_db()
+
+# ==========================================
+# توابع رمزنگاری (این بخش در فایل شما پاک شده بود)
+# ==========================================
+def make_hashes(password): 
+    return hashlib.sha256(str.encode(password)).hexdigest()
+
+def check_hashes(password, hashed_text): 
+    return make_hashes(password) == hashed_text
+
+# متغیرهای نشست برای ریست کردن فرم‌ها
+if "inc_key" not in st.session_state: st.session_state.inc_key = 0
+if "fix_key" not in st.session_state: st.session_state.fix_key = 0
+if "var_key" not in st.session_state: st.session_state.var_key = 0
+
 # ==========================================
 # AUTHENTICATION FLOW
 # ==========================================
