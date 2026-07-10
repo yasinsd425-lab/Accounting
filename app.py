@@ -78,25 +78,6 @@ def init_db():
     
     id_type = "SERIAL PRIMARY KEY" if IS_POSTGRES else "INTEGER PRIMARY KEY AUTOINCREMENT"
     
-    cursor.execute(f'''CREATE TABLE IF NOT EXISTS users (id {id_type}, username TEXT UNIQUE, password TEXT)''')
-    # Added contract duration tracking columns to the income schema
-    cursor.execute(f'''CREATE TABLE IF NOT EXISTS income (
-                        id {id_type}, user_id INTEGER, source TEXT, amount REAL, inc_type TEXT, 
-                        start_month INTEGER, start_year INTEGER, end_month INTEGER, end_year INTEGER, timestamp TEXT)''')
-    cursor.execute(f'''CREATE TABLE IF NOT EXISTS fixed_expenses (id {id_type}, user_id INTEGER, name TEXT, amount REAL, month INTEGER, year INTEGER, timestamp TEXT)''')
-    cursor.execute(f'''CREATE TABLE IF NOT EXISTS variable_expenses (id {id_type}, user_id INTEGER, category TEXT, description TEXT, amount REAL, month INTEGER, year INTEGER, timestamp TEXT)''')
-    
-    conn.commit()
-    conn.close()
-
-init_db()
-
-def init_db():
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    id_type = "SERIAL PRIMARY KEY" if IS_POSTGRES else "INTEGER PRIMARY KEY AUTOINCREMENT"
-    
     # ساخت جداول در صورت عدم وجود
     cursor.execute(f'''CREATE TABLE IF NOT EXISTS users (id {id_type}, username TEXT UNIQUE, password TEXT)''')
     cursor.execute(f'''CREATE TABLE IF NOT EXISTS income (
@@ -128,6 +109,8 @@ def init_db():
     conn.commit()
     conn.close()
 
+# فراخوانی و اجرای تابع دقیقاً باید اینجا و فقط یک‌بار باشد
+init_db()
 # ==========================================
 # AUTHENTICATION FLOW
 # ==========================================
